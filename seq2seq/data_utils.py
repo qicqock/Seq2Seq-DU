@@ -570,11 +570,11 @@ class InputExample(object):
     start_char_idx.append(0)
     end_char_idx.append(0)
 
-    utt_subword.append("[USE]")
-    utt_seg.append(0)
-    utt_mask.append(1)
-    start_char_idx.append(0)
-    end_char_idx.append(0)
+    # utt_subword.append("[USE]")
+    # utt_seg.append(0)
+    # utt_mask.append(1)
+    # start_char_idx.append(0)
+    # end_char_idx.append(0)
 
     for subword_idx, subword in enumerate(user_tokens):
       utt_subword.append(subword)
@@ -597,11 +597,11 @@ class InputExample(object):
                    history_user_inv_alignments, history_system_inv_alignments, \
                    history_user_utterance, history_system_utterance):
 
-      utt_subword.append("[USE]")
-      utt_seg.append(1)
-      utt_mask.append(1)
-      start_char_idx.append(0)
-      end_char_idx.append(0)
+      # utt_subword.append("[USE]")
+      # utt_seg.append(1)
+      # utt_mask.append(1)
+      # start_char_idx.append(0)
+      # end_char_idx.append(0)
 
       for subword_idx, subword in enumerate(his_user_tokens):
         utt_subword.append(subword)
@@ -613,11 +613,11 @@ class InputExample(object):
 
       alignments_bias += len(his_user_utterance)
 
-      utt_subword.append("[SYS]")
-      utt_seg.append(1)
-      utt_mask.append(1)
-      start_char_idx.append(0)
-      end_char_idx.append(0)
+      # utt_subword.append("[SYS]")
+      # utt_seg.append(1)
+      # utt_mask.append(1)
+      # start_char_idx.append(0)
+      # end_char_idx.append(0)
 
       for subword_idx, subword in enumerate(his_system_tokens):
         utt_subword.append(subword)

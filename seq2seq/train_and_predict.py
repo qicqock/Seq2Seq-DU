@@ -25,13 +25,16 @@ from __future__ import division
 from __future__ import print_function
 
 import sys
-
+sys.path.append('.') # add current directory in sys to resolve module error
 
 import collections
 import os
 
 import numpy as np
 import tensorflow as tf
+# use horovod
+# import horovod.tensorflow as hvd
+
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
@@ -496,6 +499,9 @@ class SchemaGuidedDST(object):
     # <pad>,<start>,<sep>,<end>
     special_token_embedding = tf.get_variable("special_token_embedding", [4, embedding_dim], tf.float32,
                                               tf.contrib.layers.xavier_initializer())
+    # <pad>,<start>,<sep>,<end>,<USE>,<SYS>
+    # special_token_embedding = tf.get_variable("special_token_embedding", [6, embedding_dim], tf.float32,
+    #                                           tf.contrib.layers.xavier_initializer())
 
     # Shape: [batch_size, vocab_size, embedding_dim]
     embedding_table = tf.concat([tf.tile(tf.expand_dims(special_token_embedding, axis=0), [batch_size, 1, 1]), input], axis=1)
@@ -991,6 +997,11 @@ def _create_schema_embeddings(bert_config, schema_embedding_file,
   vocab_file = os.path.join(FLAGS.bert_ckpt_dir, "vocab.txt")
   tokenizer = tokenization.FullTokenizer(
       vocab_file=vocab_file, do_lower_case=FLAGS.do_lower_case)
+      
+  # add speical tokens [USE] and [SYS] in bert tokenizer
+#   special_tokens_dict = {'additional special token': ['[USE]','[SYS]']}
+#   tokenizer.add_tokens(special_tokens_dict)
+      
   emb_generator = extract_schema_embedding.SchemaEmbeddingGenerator(
       tokenizer, schema_emb_estimator, FLAGS.max_seq_length)
   emb_generator.save_embeddings(schemas, schema_embedding_file, dataset_config)
@@ -1006,6 +1017,7 @@ def get_num_params(estimator):
 
 
 def main(_):
+#   hvd.init()  
   vocab_file = os.path.join(FLAGS.bert_ckpt_dir, "vocab.txt")
   task_name = FLAGS.task_name.lower()
   if task_name not in config.DATASET_CONFIG:
@@ -1059,104 +1071,110 @@ def main(_):
     tpu_cluster_resolver = tf.contrib.cluster_resolver.TPUClusterResolver(
         FLAGS.tpu_name, zone=FLAGS.tpu_zone, project=FLAGS.gcp_project)
 
-  mirrored_strategy = tf.distribute.MirroredStrategy()
+  mirrored_strategy = tf.distribute.MirroredStrategy(devices=None,
+                        cross_device_ops=None)
+#   mirrored_strategy = tf.distribute.experimental.MultiWorkerMirroredStrategy()    
+
   run_config = tf.estimator.RunConfig(
       model_dir=model_output_dir_with_para,
       save_checkpoints_steps=FLAGS.save_checkpoints_steps,
       keep_checkpoint_max=None,
-      train_distribute=mirrored_strategy)
+      train_distribute=mirrored_strategy,
+      eval_distribute=mirrored_strategy)
 
   is_per_host = tf.contrib.tpu.InputPipelineConfig.PER_HOST_V2
-  
-  num_train_steps = None
-  num_warmup_steps = None
-  if FLAGS.run_mode == "train":
-      num_train_examples = processor.get_num_dialog_examples(FLAGS.dataset_split)
-      num_train_steps = int(num_train_examples / FLAGS.train_batch_size *
-                            FLAGS.num_train_epochs / FLAGS.GPU_num)
-      num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion / FLAGS.GPU_num)
 
-  bert_init_ckpt = os.path.join(FLAGS.bert_ckpt_dir, "bert_model.ckpt")
-  model_fn = _model_fn_builder(
-      bert_config=bert_config,
-      init_checkpoint=bert_init_ckpt,
-      learning_rate=FLAGS.learning_rate,
-      num_train_steps=num_train_steps,
-      num_warmup_steps=num_warmup_steps,
-      use_tpu=FLAGS.use_tpu,
-      use_one_hot_embeddings=FLAGS.use_tpu)
+  with mirrored_strategy.scope():
+    
+    num_train_steps = None
+    num_warmup_steps = None
+    if FLAGS.run_mode == "train":
+        num_train_examples = processor.get_num_dialog_examples(FLAGS.dataset_split)
+        num_train_steps = int(num_train_examples / FLAGS.train_batch_size *
+                                FLAGS.num_train_epochs / FLAGS.GPU_num)
+        num_warmup_steps = int(num_train_steps * FLAGS.warmup_proportion / FLAGS.GPU_num)
 
-  
-  estimator = tf.estimator.Estimator(
-      model_fn=model_fn,
-      config=run_config)
+    bert_init_ckpt = os.path.join(FLAGS.bert_ckpt_dir, "bert_model.ckpt")
+    model_fn = _model_fn_builder(
+        bert_config=bert_config,
+        init_checkpoint=bert_init_ckpt,
+        learning_rate=FLAGS.learning_rate,
+        num_train_steps=num_train_steps,
+        num_warmup_steps=num_warmup_steps,
+        use_tpu=FLAGS.use_tpu,
+        use_one_hot_embeddings=FLAGS.use_tpu)
 
-  if FLAGS.run_mode == "train":
-    # Train the model.
-    tf.compat.v1.logging.info("***** Running training *****")
-    tf.compat.v1.logging.info("  Num dial examples = %d", num_train_examples)
-    tf.compat.v1.logging.info("  Batch size = %d", FLAGS.train_batch_size)
-    tf.compat.v1.logging.info("  Num steps = %d", num_train_steps)
-    # params_num = get_num_params(estimator)
-    # tf.compat.v1.logging.info("  Num params = %d", params_num)
+    
+    estimator = tf.estimator.Estimator(
+        model_fn=model_fn,
+        config=run_config)
 
-    train_input_fn = _file_based_input_fn_builder(
-        dataset_config=dataset_config,
-        input_dial_file=dial_file,
-        schema_embedding_file=schema_embedding_file,
-        is_training=True,
-        drop_remainder=True,
-        batch_size=FLAGS.train_batch_size)
-    estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
-  elif FLAGS.run_mode == "predict":
-    # Run inference to obtain model predictions.
-    num_actual_predict_examples = processor.get_num_dialog_examples(
-        FLAGS.dataset_split)
+    if FLAGS.run_mode == "train":
+        # Train the model.
+        tf.compat.v1.logging.info("***** Running training *****")
+        tf.compat.v1.logging.info("  Num dial examples = %d", num_train_examples)
+        tf.compat.v1.logging.info("  Batch size = %d", FLAGS.train_batch_size)
+        tf.compat.v1.logging.info("  Num steps = %d", num_train_steps)
+        # params_num = get_num_params(estimator)
+        # tf.compat.v1.logging.info("  Num params = %d", params_num)
 
-    tf.compat.v1.logging.info("***** Running prediction *****")
-    tf.compat.v1.logging.info("  Num actual examples = %d",
-                              num_actual_predict_examples)
-    tf.compat.v1.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
-    # params_num = get_num_params(estimator)
-    # tf.compat.v1.logging.info("  Num params = %d", params_num)
+        train_input_fn = _file_based_input_fn_builder(
+            dataset_config=dataset_config,
+            input_dial_file=dial_file,
+            schema_embedding_file=schema_embedding_file,
+            is_training=True,
+            drop_remainder=True,
+            batch_size=FLAGS.train_batch_size)
+        estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
+    elif FLAGS.run_mode == "predict":
+        # Run inference to obtain model predictions.
+        num_actual_predict_examples = processor.get_num_dialog_examples(
+            FLAGS.dataset_split)
 
-    predict_input_fn = _file_based_input_fn_builder(
-        dataset_config=dataset_config,
-        input_dial_file=dial_file,
-        schema_embedding_file=schema_embedding_file,
-        is_training=False,
-        drop_remainder=FLAGS.use_tpu,
-        batch_size=FLAGS.predict_batch_size)
+        tf.compat.v1.logging.info("***** Running prediction *****")
+        tf.compat.v1.logging.info("  Num actual examples = %d",
+                                num_actual_predict_examples)
+        tf.compat.v1.logging.info("  Batch size = %d", FLAGS.predict_batch_size)
+        # params_num = get_num_params(estimator)
+        # tf.compat.v1.logging.info("  Num params = %d", params_num)
 
-    input_json_files = [
-        os.path.join(FLAGS.dstc8_data_dir, FLAGS.dataset_split,
-                     "dialogues_{:03d}.json".format(fid))
-        for fid in dataset_config.file_ranges[FLAGS.dataset_split]
-    ]
-    schema_json_file = os.path.join(FLAGS.dstc8_data_dir, FLAGS.dataset_split,
-                                    "schema.json")
+        predict_input_fn = _file_based_input_fn_builder(
+            dataset_config=dataset_config,
+            input_dial_file=dial_file,
+            schema_embedding_file=schema_embedding_file,
+            is_training=False,
+            drop_remainder=FLAGS.use_tpu,
+            batch_size=FLAGS.predict_batch_size)
 
-    ckpt_nums = [num for num in FLAGS.eval_ckpt.split(",") if num]
-    if not ckpt_nums:
-      raise ValueError("No checkpoints assigned for prediction.")
-    for ckpt_num in ckpt_nums:
-      tf.compat.v1.logging.info("***** Predict results for %s set *****",
-                                FLAGS.dataset_split)
+        input_json_files = [
+            os.path.join(FLAGS.dstc8_data_dir, FLAGS.dataset_split,
+                        "dialogues_{:03d}.json".format(fid))
+            for fid in dataset_config.file_ranges[FLAGS.dataset_split]
+        ]
+        schema_json_file = os.path.join(FLAGS.dstc8_data_dir, FLAGS.dataset_split,
+                                        "schema.json")
 
-      predictions = estimator.predict(
-          input_fn=predict_input_fn,
-          checkpoint_path=os.path.join(model_output_dir_with_para,
-                                       "model.ckpt-%s" % ckpt_num))
-      
-      # Write predictions to file in DSTC8 format.
-      dataset_mark = os.path.basename(FLAGS.dstc8_data_dir)
-      prediction_dir = os.path.join(
-          model_output_dir_with_para, "pred_res_{}_{}_{}_{}".format(
-              int(ckpt_num), FLAGS.dataset_split, task_name, dataset_mark))
-      if not tf.io.gfile.exists(prediction_dir):
-        tf.io.gfile.makedirs(prediction_dir)
-      pred_utils.write_predictions_to_file(predictions, input_json_files,
-                                           schema_json_file, prediction_dir, dataset_config)
+        ckpt_nums = [num for num in FLAGS.eval_ckpt.split(",") if num]
+        if not ckpt_nums:
+            raise ValueError("No checkpoints assigned for prediction.")
+        for ckpt_num in ckpt_nums:
+            tf.compat.v1.logging.info("***** Predict results for %s set *****",
+                                    FLAGS.dataset_split)
+
+        predictions = estimator.predict(
+            input_fn=predict_input_fn,
+            checkpoint_path=os.path.join(model_output_dir_with_para,
+                                        "model.ckpt-%s" % ckpt_num))
+        
+        # Write predictions to file in DSTC8 format.
+        dataset_mark = os.path.basename(FLAGS.dstc8_data_dir)
+        prediction_dir = os.path.join(
+            model_output_dir_with_para, "pred_res_{}_{}_{}_{}".format(
+                int(ckpt_num), FLAGS.dataset_split, task_name, dataset_mark))
+        if not tf.io.gfile.exists(prediction_dir):
+            tf.io.gfile.makedirs(prediction_dir)
+        pred_utils.write_predictions_to_file(predictions, input_json_files,
+                                            schema_json_file, prediction_dir, dataset_config)
 
 
 if __name__ == "__main__":

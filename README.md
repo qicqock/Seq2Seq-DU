@@ -11,3 +11,6 @@ Three example scripts are provided for how to use Seq2Seq-DU. train.sh will trai
 3.numpy<br> 
 4.six<br> 
 5.tensorflow
+
+
+(Customize code from https://github.com/sweetalyssum/Seq2Seq-DU)

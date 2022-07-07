@@ -1,0 +1,10 @@
+__pycache__/*
+dialogues_example/
+uncased_L-12_H-768_A-12/
+seq2seq/__pycache__/
+seq2seq/bert/__pycache__/
+0707_1022_temp_preprocess/
+dialogues_example/
+dstc8/
+dstc8_all/
+schema_embedding/
